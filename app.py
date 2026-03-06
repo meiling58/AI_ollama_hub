@@ -5,24 +5,15 @@ import subprocess
 import re
 import ollama
 
+
 # 1. SETUP & HARDWARE DETECTION
 st.set_page_config(page_title="Ollama Specialist Hub", layout="wide")
 
 
 @st.cache_data(ttl=300)
 def get_gpu_info():
-    try:
-        cmd = ["powershell", "Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM"]
-        output = subprocess.check_output(cmd).decode()
-        for line in output.split('\n'):
-            if "Radeon" in line:
-                raw_bytes = re.findall(r'\d+', line)
-                if raw_bytes:
-                    vram_gb = round(int(raw_bytes[-1]) / (1024 ** 3), 1)
-                    return {"name": "AMD Radeon™ Graphics", "vram_gb": vram_gb}
-        return None
-    except:
-        return None
+    # Since we've disabled the iGPU, we force the 16GB limit
+    return {"name": "AMD Radeon RX 9060 XT", "vram_gb": 16.0}
 
 
 @st.cache_data(ttl=10)
@@ -58,11 +49,22 @@ def get_detailed_inventory():
     except:
         return empty_df
 
+# --- PERSONALITY LIBRARY ---
+SPECIALIST_PROMPTS = {
+    "General Assistant": "You are a helpful, concise AI assistant.",
+    "Expert Python Coder": "You are a senior Python developer. Provide clean, PEP-8 compliant code with deep logic comments.",
+    "Creative Storyteller": "You are a world-class novelist. Use vivid imagery and engaging dialogue.",
+    "Technical Educator": "You are a patient professor. Explain complex topics using simple analogies and bullet points."
+}
 
 # 2. DATA LOADING
 gpu = get_gpu_info()
 df_inventory = get_detailed_inventory()
 engine = HubEngine('data/ollama_library.json')
+
+st.sidebar.header("🛠️ Control Center")
+selected_persona = st.sidebar.selectbox("AI Persona", list(SPECIALIST_PROMPTS.keys()))
+st.sidebar.divider()
 
 if not df_inventory.empty:
     installed_models = set(df_inventory["Model"].tolist())
@@ -82,20 +84,15 @@ with m2:
     st.metric("🧠 Brain Power", f"{total_params} B")
 with m3:
     if gpu:
-        st.metric("🎮 iGPU VRAM", f"{gpu['vram_gb']} GB")
+        st.metric("🎮 Dedicated VRAM", f"{gpu['vram_gb']} GB", "RX 9060 XT")
 
-# Health Bar
-storage_target = 50.0
-if total_used > storage_target:
-    st.error(f"🚨 Storage Limit Warning: {total_used}GB / {storage_target}GB")
-else:
-    st.success(f"✅ Storage Healthy: {total_used}GB / {storage_target}GB")
-st.progress(min(total_used / storage_target, 1.0))
+# Storage Health Bar
+st.progress(min(total_used / 50.0, 1.0), text=f"Storage: {total_used}GB / 50GB")
 
 st.divider()
 
 # --- 4. CHAT (STAY AT TOP VERSION) ---
-st.header("💬 Specialist Chat")
+st.header(f"💬 Chat: {selected_persona}")
 
 if installed_models:
     # We create a main frame for the chat so it doesn't "leak" to the bottom
@@ -111,10 +108,11 @@ if installed_models:
                 st.rerun()
 
         # Scrollable area for messages
-        chat_container = st.container(height=300)
+        chat_container = st.container(height=450)  # Increased height for your 16GB setup
+        prompt = st.chat_input(f"Message {chat_model} as {selected_persona}...")
 
         # The input box - by putting it inside 'with chat_frame', it stays under the selector
-        prompt = st.chat_input(f"Message {chat_model}...")
+        # prompt = st.chat_input(f"Message {chat_model}...")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -122,36 +120,37 @@ if installed_models:
     # Display history
     with chat_container:
         for m in st.session_state.messages:
-            with st.chat_message(m["role"]):
-                st.markdown(m["content"])
+            chat_container.chat_message(m["role"]).markdown(m["content"])
 
     # Logic
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with chat_container:
-            st.chat_message("user").markdown(prompt)
+        chat_container.chat_message("user").markdown(prompt)
 
-        with chat_container:
-            with st.chat_message("assistant"):
-                with st.spinner("Processing..."):
-                    try:
-                        # Safety: 5700G memory guard
-                        history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-4:]]
-                        response = ollama.chat(model=chat_model, messages=history)
-                        answer = response['message']['content']
-                        st.markdown(answer)
-                        st.session_state.messages.append({"role": "assistant", "content": answer})
-                    except Exception as e:
-                        st.error(f"Hardware Reset Detected: {e}")
+        with chat_container.chat_message("assistant"):
+            with st.spinner("Processing..."):
+                try:
+                    # SYSTEM PROMPT INJECTION + HISTORY (Expanded to 30 messages for 16GB VRAM)
+                    system_msg = {"role": "system", "content": SPECIALIST_PROMPTS[selected_persona]}
+                    history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-30:]]
+
+                    response = ollama.chat(model=chat_model, messages=[system_msg] + history)
+                    answer = response['message']['content']
+                    st.markdown(answer)
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                except Exception as e:
+                    st.error(f"Hardware Error: {e}")
 else:
-    st.info("No models detected.")
+    st.info("No models detected. Use the discovery section below to install one.")
 
 st.divider()
 
 #--- 5. LIBRARY DISCOVERY ---
 st.header("🔎 Model Library Discovery")
+
+
 st.sidebar.header("Filter Models")
-task_filter = st.sidebar.multiselect("Capabilities", ["vision", "tools", "thinking", "embedding"])
+task_filter = st.sidebar.multiselect("Capabilities", ["vision", "tools", "thinking", "embedding", "cloud"])
 
 st.sidebar.divider()
 st.sidebar.header("📂 Local Storage")
@@ -167,6 +166,8 @@ if task_filter:
         model_caps_clean = [str(c).lower() for c in model_caps]
         return any(t.lower() in model_caps_clean for t in task_filter)
     df = df[df['capabilities'].apply(match_tasks)]
+
+st.write(f"Found **{len(df)}** models matching your criteria.")
 
 cols = st.columns(3)
 for i, row in df.iterrows():
@@ -191,7 +192,8 @@ for i, row in df.iterrows():
             if selected_tag in installed_models:
                 if st.button(f"🗑️ Remove", key=f"remove_{i}"):
                     subprocess.run(["ollama", "rm", selected_tag])
-                    st.cache_data.clear()
+                    get_detailed_inventory.clear()  # Clear specific function cache
+                    # st.cache_data.clear()
                     st.rerun()
             else:
                 if is_too_large:
