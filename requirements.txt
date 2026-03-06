@@ -1,0 +1,14 @@
+# Web Scraping
+selenium
+webdriver-manager
+
+# System & Hardware Analysis
+psutil
+ollama
+
+# UI & Data Visualization
+streamlit
+pandas
+
+# Utilities
+python-dateutil
